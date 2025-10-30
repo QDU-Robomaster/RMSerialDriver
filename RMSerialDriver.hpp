@@ -27,7 +27,7 @@ depends:
 class RMSerialDriver : public LibXR::Application
 {
  public:
-  RMSerialDriver(LibXR::HardwareContainer &hw, LibXR::ApplicationManager &app,
+  RMSerialDriver(LibXR::HardwareContainer& hw, LibXR::ApplicationManager& app,
                  double timestamp_offset, std::string device_name, int baud_rate,
                  LibXR::UART::Parity parity);
 
@@ -49,8 +49,6 @@ class RMSerialDriver : public LibXR::Application
 
   void resetTracker();
 
-  // void receive_marker(const auto_aim_interfaces::msg::Receive::SharedPtr msg);
-
   // Serial port
   std::string device_name_;
   int baud_rate_;
@@ -67,12 +65,12 @@ class RMSerialDriver : public LibXR::Application
   };
 
   Receive receive_msg_;
-
-  LibXR::LinuxUART *uart_;
+  LibXR::Thread receive_thread_;
+  LibXR::LinuxUART* uart_;
 
   double timestamp_offset_ = 0;
+
   LibXR::Topic velocity_topic_ = LibXR::Topic("/current_velocity", sizeof(double));
   LibXR::Topic receive_topic_ = LibXR::Topic("/tracker/receive", sizeof(Receive));
-
-  LibXR::Thread receive_thread_;
+  LibXR::Topic send_topic_{};
 };

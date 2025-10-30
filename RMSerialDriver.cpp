@@ -1,15 +1,13 @@
 #include "RMSerialDriver.hpp"
 
 // C++ system
-#include <math.h>
-
+#include <cmath>
 #include <cstdint>
-#include <functional>
 #include <map>
-#include <memory>
 #include <string>
 #include <vector>
 
+// LibXR
 #include "crc.hpp"
 #include "libxr_rw.hpp"
 #include "libxr_type.hpp"
@@ -20,39 +18,30 @@
 #include "semaphore.hpp"
 #include "thread.hpp"
 
-RMSerialDriver::RMSerialDriver(LibXR::HardwareContainer& hw,
-                               LibXR::ApplicationManager& app, double timestamp_offset,
-                               std::string device_name, int baud_rate,
-                               LibXR::UART::Parity parity)
-    : device_name_{device_name},
-      baud_rate_{baud_rate},
-      parity_{parity},
-      timestamp_offset_(timestamp_offset)
-{
-  //! serial_driver  第一部分 参数设置
-  // INFO打印
+RMSerialDriver::RMSerialDriver(LibXR::HardwareContainer &hw,
+                               LibXR::ApplicationManager &app,
+                               double timestamp_offset, std::string device_name,
+                               int baud_rate, LibXR::UART::Parity parity)
+    : device_name_{device_name}, baud_rate_{baud_rate}, parity_{parity},
+      timestamp_offset_(timestamp_offset) {
   XR_LOG_INFO("Start RMSerialDriver!");
+  send_topic_ = LibXR::Topic("send", sizeof(ArmorTracker::Send));
+  uart_ = new LibXR::LinuxUART(device_name_.c_str(), baud_rate_, parity_, 8, 1,
+                               128, 8192);
 
-  //! serial_driver 第二部分 串口初始化以及收发
-  uart_ =
-      new LibXR::LinuxUART(device_name_.c_str(), baud_rate_, parity_, 8, 1, 128, 8192);
-
-  receive_thread_.Create<RMSerialDriver*>(
-      this, [](RMSerialDriver* serial) { serial->receiveData(); }, "RecvThread", 512,
-      LibXR::Thread::Priority::HIGH);
-
-  LibXR::Topic send_topic = LibXR::Topic::Find("/tracker/send");
+  receive_thread_.Create<RMSerialDriver *>(
+      this, [](RMSerialDriver *serial) { serial->receiveData(); }, "RecvThread",
+      512, LibXR::Thread::Priority::HIGH);
 
   auto send_cb = LibXR::Topic::Callback::Create(
-      [](bool, RMSerialDriver* serial, LibXR::RawData& data)
-      {
+      [](bool, RMSerialDriver *serial, LibXR::RawData &data) {
         XR_LOG_DEBUG("SerialDriver send data");
-        auto send_data = reinterpret_cast<ArmorTracker::Send*>(data.addr_);
+        auto send_data = reinterpret_cast<ArmorTracker::Send *>(data.addr_);
         serial->sendData(*send_data);
       },
       this);
 
-  send_topic.RegisterCallback(send_cb);
+  send_topic_.RegisterCallback(send_cb);
 
   double v = 0.0;
   velocity_topic_.Publish(v);
@@ -66,33 +55,27 @@ RMSerialDriver::RMSerialDriver(LibXR::HardwareContainer& hw,
 RMSerialDriver::~RMSerialDriver() {}
 
 //! 接受数据 电控 -> 视觉
-void RMSerialDriver::receiveData()
-{
+void RMSerialDriver::receiveData() {
   uint8_t header(1);
   ReceivePacket data;
   LibXR::Semaphore sem;
   LibXR::ReadOperation read_op(sem);
 
-  while (true)
-  {
+  while (true) {
     uart_->Read(header, read_op);
 
-    if (header == 0x5A)
-    {
-      // data.resize(sizeof(ReceivePacket) - 1);
-      // serial_driver_->port()->receive(data);
+    if (header == 0x5A) {
       uart_->Read({&data.header + 1, sizeof(ReceivePacket) - 1}, read_op);
 
-      ReceivePacket& packet = data;
+      ReceivePacket &packet = data;
 
       // CRC校验
-      bool crc_ok =
-          LibXR::CRC16::Verify(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+      bool crc_ok = LibXR::CRC16::Verify(
+          reinterpret_cast<const uint8_t *>(&packet), sizeof(packet));
 
-      if (crc_ok)
-      {
-        if (!initial_set_param_ || packet.detect_color != previous_receive_color_)
-        {
+      if (crc_ok) {
+        if (!initial_set_param_ ||
+            packet.detect_color != previous_receive_color_) {
           // TODO: 发布阵营
           previous_receive_color_ = packet.detect_color;
         }
@@ -128,29 +111,24 @@ void RMSerialDriver::receiveData()
         //* 发布的 joint_state
 
         // 速度发布
-        double current_velocity;
+        double current_velocity = 0.0;
         current_velocity = packet.current_v;
         velocity_topic_.Publish(current_velocity);
-      }
-      else
-      {
+      } else {
         XR_LOG_ERROR("CRC error!");
       }
-    }
-    else
-    {
+    } else {
       XR_LOG_WARN("Invalid header: %02X", header);
     }
   }
 }
 
 //! 发送数据 视觉 -> 电控
-void RMSerialDriver::sendData(ArmorTracker::Send msg)
-{
+void RMSerialDriver::sendData(ArmorTracker::Send msg) {
   static LibXR::WriteOperation write_op;
 
   // 对齐目标号码
-  const static std::map<std::string, uint8_t> id_unit8_map{
+  const static std::map<std::string, uint8_t> ID_UINT8_MAP{
       {"", 0},  {"outpost", 0}, {"1", 1}, {"1", 1},     {"2", 2},
       {"3", 3}, {"4", 4},       {"5", 5}, {"guard", 6}, {"base", 7}};
 
@@ -183,8 +161,8 @@ void RMSerialDriver::sendData(ArmorTracker::Send msg)
   // packet.yaw = RMSerialDriver::yaw_trans(msg->yaw);
 
   // crc对齐
-  packet.checksum = LibXR::CRC16::Calculate(reinterpret_cast<uint8_t*>(&packet),
-                                            sizeof(packet) - sizeof(uint16_t));
+  packet.checksum = LibXR::CRC16::Calculate(
+      reinterpret_cast<uint8_t *>(&packet), sizeof(packet) - sizeof(uint16_t));
 
   // 打印 data 结构体中的 xyz 和 yaw 值
   // std::cout << "[Send] is_fire" << packet.is_fire << std::endl;
@@ -215,44 +193,30 @@ void RMSerialDriver::sendData(ArmorTracker::Send msg)
 
 //! 角度换算
 // [-PI,PI] -> [0,2PI] 转换
-float RMSerialDriver::pitch_trans(float originAngle)
-{
-  if (originAngle < 0)
-  {
+float RMSerialDriver::pitch_trans(float originAngle) {
+  if (originAngle < 0) {
     originAngle = originAngle + 2 * M_PI;
   }
-
   return originAngle;
-  // return originAngle;
 }
 
 // [0,2PI] -> [-PI,PI] 转换
-float RMSerialDriver::pitch_re_trans(float originAngle)
-{
-  if (originAngle > M_PI)
-  {
+float RMSerialDriver::pitch_re_trans(float originAngle) {
+  if (originAngle > M_PI) {
     originAngle = originAngle - 2 * M_PI;
   }
-
   return originAngle;
-  // return originAngle-M_PI;
 }
 // [-PI,PI] -> [0,2PI] 转换
-float RMSerialDriver::yaw_trans(float originAngle)
-{
-  if (originAngle < 0)
-  {
+float RMSerialDriver::yaw_trans(float originAngle) {
+  if (originAngle < 0) {
     originAngle = originAngle + 2 * M_PI;
   }
-
   return originAngle;
-
-  // [0,2PI] -> [-PI,PI] 转换
 }
-float RMSerialDriver::yaw_re_trans(float originAngle)
-{
-  if (originAngle > M_PI)
-  {
+// [0,2PI] -> [-PI,PI] 转换
+float RMSerialDriver::yaw_re_trans(float originAngle) {
+  if (originAngle > M_PI) {
     originAngle = originAngle - 2 * M_PI;
   }
   return originAngle;
